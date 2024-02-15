@@ -1,0 +1,169 @@
+---
+title: "Robinning"
+subtitle: "3- dereplicate the bins"
+author: "Robin Rohwer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{css, echo=FALSE}
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: scroll !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+```
+
+## prep files
+
+I ran drep on the server but most of the setup was done with R scripts- I used launcher because that's what I know how to do but it's only one line long.  
+
+I used the script `scripts/2022-11-10_pull_checkM_info_for_dRep_input.R` to create the input files needed by drep:  
+`bin_locations_for_dRep.txt`. 
+```{bash, eval=TRUE, echo=TRUE, collapse=TRUE}
+head -n 5 ../data/2022-11-10_dRep_files/input/bin_locations_for_dRep.txt
+```
+`bin_info_for_dRep.csv`
+```{bash, eval=TRUE, echo=TRUE, collapse=TRUE}
+head -n 5 ../data/2022-11-10_dRep_files/input/bin_info_for_dRep.csv
+```
+## Run dRep at 95%
+
+It took 10 hours to run on a single node. 
+
+slurm:
+```{bash, eval=F}
+#!/bin/bash
+#SBATCH -J drep
+#SBATCH -p normal
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH -t 48:0:00
+#SBATCH -o drep.o%j
+#SBATCH -e drep.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load launcher
+export LAUNCHER_JOB_FILE=run_drep.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+launcher:
+```{bash, eval=F}
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.95 --multiround_primary_clustering --skip_plots
+```
+
+Note that I did the primary clustering at 90% and the secondary clustering at 95%, and I only used bins with >50% completeness and <10% contamination.  
+
+## reformat output files
+
+The script `2022-11-12_look_at_drep_results.R` creates these files from the drep output:
+
+`drep_results_all_genomes.rds` includes all 85,684 bins and their dRep clusters (if applicable), as well as the GTDB and checkM results. I also calculated the number of bins in each dRep cluster and added that info too:
+```{r, eval=TRUE, collapse=TRUE}
+x <- readRDS("../data/2022-11-10_dRep_files/drep_results_all_genomes.rds")
+head(x)
+```
+
+`drep_results_winning_genomes.rds` includes the same information, but only the winner genomes. I made it a .csv file too to share with Trina/Brett.
+```{r, eval=TRUE, collapse=TRUE}
+x <- readRDS("../data/2022-11-10_dRep_files/drep_results_winning_genomes.rds")
+head(x)
+```
+
+## how fine are the bins?
+
+I wanted to explore the 95% choice for binning- was that combining strains? I looked at whether any bins from the same sample got combined into the same group by dRep. If so, that would mean that we were able to distinguish bins more finely than we were grouping them, which isn't what we want with dRep, we want to just combine "duplicate" bins from different samples.
+
+Out of all 30,000 or so MQ/HQ bins that dRep handled, only 2 bins from the same sample (a Bacteroidota) got combined.  
+ 
+
+## Re-run w/ ANI range
+
+Given that two bins were combined that "shouldn't" have been (because they were binned separately out of the same sample, so likely have different ecology/temporal coverage), I repeated dRep at different ANI cutoffs to dig into the cutoff choice more.  
+
+I did 90-99% ANI, and set it up to run in paralelle, each one on a whole node. It ran for almost 15 hrs this time- I think the finer cutoff takes longer to cluster. 
+
+slurm:
+```{bash, eval=F}
+#!/bin/bash
+#SBATCH -J dRep
+#SBATCH -p normal
+#SBATCH -N 10
+#SBATCH -n 10
+#SBATCH -t 20:00:00
+#SBATCH -o drep.o%j
+#SBATCH -e drep.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load launcher
+export LAUNCHER_JOB_FILE=run_drep_ANIrange.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+launcher:
+```{bash, eval=F}
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output_0.9 -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.9 --multiround_primary_clustering --skip_plots
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output_0.91 -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.91 --multiround_primary_clustering --skip_plots
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output_0.92 -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.92 --multiround_primary_clustering --skip_plots
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output_0.93 -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.93 --multiround_primary_clustering --skip_plots
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output_0.94 -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.94 --multiround_primary_clustering --skip_plots
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output_0.95 -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.95 --multiround_primary_clustering --skip_plots
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output_0.96 -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.96 --multiround_primary_clustering --skip_plots
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output_0.97 -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.97 --multiround_primary_clustering --skip_plots
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output_0.98 -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.98 --multiround_primary_clustering --skip_plots
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output_0.99 -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.99 --multiround_primary_clustering --skip_plots
+```
+
+## Choose 96% ANI
+
+First I re-processed the drep output, similarly to how I did it before but with the new scripts:
+
+   1. `copy_dRep_output_files.sh` to zip up same-type output from the multiple output folders.  
+   2. `2023-02-27_parse_drep_ANIrange_results.R` to create combined summary files with drep clusters and taxonomy.  Note this is the same as the `all_bins.rds` key object I made before, but for each dRep ANI value.  
+   3. `2023-02-27_compare_dRep_ANI_choices.R` to look at the drep options visually, below.  
+
+
+I made plots that show both number of clusters and incorrectly combined same-sample bins to decide on the cutoff.  
+
+* ANI too low --> 2 species get combined, muddies their ecol. signals.
+* ANI too high --> 1 species split in two, strains compete downstream in read mapping, muddies their abund/diversity signals.  
+
+In inStrain, we will map reads at a cutoff of 3% lower ANI than the dRep cutoff.  
+
+* cutoff mapping too low --> will misassign reads from different but poorly represented species.
+* cutoff mapping too high --> will not assign true reads with high diversity.
+
+So I looked at these plots with that in mind.  
+
+* Lower bound is clearly 95, because below that same-sample bins get combined. 
+* Upper bound is clearly 97, because at or above that clusters that were consistently 1 species start splitting into strains. 
+
+So how to choose, 95, 96, or 97?  
+
+* 95 errs on side of not splitting species
+* 97 allows a higher mapping threshold, errs on side of not misassigning reads.
+
+So I chose 96.  
+
+Here are some example plots, but figures for every phylum (with and without y-axis zoom) are in `figures/2023-02-27_dRep_ANI_comparisons`.
+
+![](../figures/2023-02-27_dRep_ANI_comparisons/png_for_notes/All_Bins.png){width=75%}
+![](../figures/2023-02-27_dRep_ANI_comparisons/png_for_notes/zoom_f__Nanopelagicaceae.png){width=75%}
+
+![](../figures/2023-02-27_dRep_ANI_comparisons/png_for_notes/zoom_g__Nanopelagicus.png){width=75%}
+
+![](../figures/2023-02-27_dRep_ANI_comparisons/png_for_notes/zoom_g__Planktophila.png){width=75%}
+
+
+

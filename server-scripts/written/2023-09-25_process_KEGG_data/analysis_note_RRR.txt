@@ -1,0 +1,25 @@
+TWO ERROR LINES IN THE TERMOUT
+
+___________
+
+
+processing  ../yggshare/current_projects/TYMEFLIES/tymeflies/kegg_annotations/kofamscan_kegg_annotations/ME2015-09-13_3300035666_group6_bin236.kofamscan.tsv.gz 
+
+
+OH NO DUPLICATE GENES IN THE TABLE
+
+
+processing  ../yggshare/current_projects/TYMEFLIES/tymeflies/kegg_annotations/kofamscan_kegg_annotations/ME2014-09-21_3300035681_group5_bin145.kofamscan.tsv.gz 
+
+
+OH NO DUPLICATE GENES IN THE TABLE
+
+___________
+
+
+fixed pathway script to address the bug and re-ran those two genomes' lines from the jobfile, no errors now.
+
+also re-ran the two genome's lines from the find consistent genes jobfile too. no errors again.
+
+
+so NOTE that if you simply re-run the scripts as is everything should reproduce without errors, there will be no need to single out these genomes in future re-runs.

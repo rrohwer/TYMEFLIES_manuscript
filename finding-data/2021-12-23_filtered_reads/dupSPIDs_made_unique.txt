@@ -1,0 +1,11 @@
+SPID FILENAME
+1263001 /global/dna/dm_archive/rqc/analyses/AUTO-360576/52591.1.391091.AGTCGCTT-AGTCGCTT.filter-METAGENOME.fastq.gz
+1262995 /global/dna/dm_archive/rqc/analyses/AUTO-359393/52591.1.391091.GTCAGTTG-GTCAGTTG.filter-METAGENOME.fastq.gz
+1282434 /global/dna/dm_archive/rqc/analyses/AUTO-360578/52591.1.391091.ACGCCTAA-ACGCCTAA.filter-METAGENOME.fastq.gz
+1263006 /global/dna/dm_archive/rqc/analyses/AUTO-341852/52542.4.375086.TCGTGGAT-TCGTGGAT.filter-METAGENOME.fastq.gz
+1282488 /global/dna/dm_archive/rqc/analyses/AUTO-341843/52542.4.375086.TATTCCGG-TATTCCGG.filter-METAGENOME.fastq.gz
+1263009 /global/dna/dm_archive/rqc/analyses/AUTO-360577/52591.1.391091.GTAGGAGT-GTAGGAGT.filter-METAGENOME.fastq.gz
+1262996 /global/dna/dm_archive/rqc/analyses/AUTO-341819/52542.4.375086.AGTCAGGA-AGTCAGGA.filter-METAGENOME.fastq.gz
+1263007 /global/dna/dm_archive/rqc/analyses/AUTO-359394/52591.1.391091.GCCTATCA-GCCTATCA.filter-METAGENOME.fastq.gz
+1282436 /global/dna/dm_archive/rqc/analyses/AUTO-354743/52577.3.387099.GTGCTTAC-GTGCTTAC.filter-METAGENOME.fastq.gz
+1282495 /global/dna/dm_archive/rqc/analyses/AUTO-341844/52542.4.375086.CCGACTAT-CCGACTAT.filter-METAGENOME.fastq.gz

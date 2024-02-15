@@ -1,0 +1,1 @@
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate drep ; dRep dereplicate drep_output -p 128 -g bin_locations_for_dRep.txt -comp 50 -con 10 --genomeInfo bin_info_for_dRep.csv --S_algorithm fastANI --P_ani 0.9 --S_ani 0.95 --multiround_primary_clustering --skip_plots

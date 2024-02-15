@@ -1,0 +1,204 @@
+---
+title: "Robinstrain"
+subtitle: "1- run inStrain profile"
+author: "Robin Rohwer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{css, echo=FALSE}
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: scroll !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+```
+
+inStrain has two modes, profile and compare. Profile compares the bam file from a single sample to the genome file to get metrics like SNVs and nucleotide diversity within one sample. Profile can be run separately, once per sample, in parallel. Compare compares the genomes across samples, using the inStrain .IS files to compare them. This gets metrics like whether the same strain was present on different days. Compare takes a really long time to run to more samples that are plugged into it, but it can be run for a single genome at a time. The way to make it go faster is to compare individual genomes at a time, and to only include the samples that they're actually in in the comparison. 
+
+## inStrain profile
+
+I ran inStrain profile on TACC, after a lot of trouble troubleshooting (It takes longer than 2 hrs to run, so all troubleshooting had to wait in queue on the regular partition). Of note: it needs an older python version to run without errors, I never got plotting to work so I just suppressed making plots, and most importantly it uses a lot of memory and if it uses too much memory it fails without an exit code so that it hangs on until TIMEOUT.  
+
+To use less memory, you can give it fewer threads, but since it takes a long time already I played around with how many threads I could squeaze in quite a bit. I tried it with the largest bam file (14 GB):  
+
+    -p 128 ran out of memory  
+    -p 112 ran out of memory  
+    -p 96 worked, took 03:30:39  
+    -p 64 worked, took 03:37:59  
+    -p 18 worked, took 05:52:02 (but with plots it timed out at 10 hrs)  
+
+So I ran it with 96 threads, 1 node per sample.
+
+To install it with an older python version, I used:
+
+```{bash, eval = F}
+conda create --name instrain_py310 python=3.10  
+pip install instrain                            # Downloading inStrain-1.7.1.tar.gz
+conda install -c bioconda prodigal              # bioconda/linux-64::prodigal-2.6.3-hec16e2b_4
+conda install -c bioconda samtools              # bioconda/linux-64::samtools-1.6-h3f2fef4_8
+```
+
+## make stb file
+
+inStrain requires an `stb` file (scaffold-to-bin file). I made that with `server-scripts/written/2023-03-13_run_inStrain_on_drep96_winners/make_inStrain_stb_file.R`. Instead of using the dRep utility command, I just parsed my scaffold names to make it. 
+
+To get the contig names:
+```{bash, eval = F}
+cat drep_winners_96_concat.fna | grep ">" > drep_winners_96_contig_list.txt
+```
+
+the stb file looks like:
+```
+ME2013-02-02s1D0_3300042325_group4_bin39_scaffold_234_c1	ME2013-02-02s1D0_3300042325_group4_bin39
+ME2013-02-02s1D0_3300042325_group4_bin39_scaffold_300_c1	ME2013-02-02s1D0_3300042325_group4_bin39
+ME2013-02-02s1D0_3300042325_group4_bin39_scaffold_320_c1	ME2013-02-02s1D0_3300042325_group4_bin39
+ME2013-02-02s1D0_3300042325_group4_bin39_scaffold_182_c2	ME2013-02-02s1D0_3300042325_group4_bin39
+ME2013-02-02s1D0_3300042325_group4_bin39_scaffold_375_c1	ME2013-02-02s1D0_3300042325_group4_bin39
+```
+
+## run on TACC
+
+I made the submit scripts using `server-scripts/written/2023-03-13_run_inStrain_on_drep96_winners/make_instrain_profile_submit_scripts.R`. I set it up to finish in a single run, so I used 60 nodes. It took exited with error TIMEOUT after 38 hrs. 
+
+slurm:
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J instrain
+#SBATCH -p normal
+#SBATCH -N 60
+#SBATCH -n 60
+#SBATCH -t 38:0:00
+#SBATCH -o instrain.o%j
+#SBATCH -e instrain.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load launcher
+export LAUNCHER_JOB_FILE=run_instrain_profile.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+launcher example:
+```{bash, eval = F}
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; inStrain profile ../maptodrep96/ME2013-02-02s1D0_3300042325.bam ../maptodrep96/drep_96_winners_concat.fna -o ME2013-02-02s1D0_3300042325.IS -g ../runprodigal96/drep_96_winners_concat_genes.fna -s instrain_stb.txt --database_mode --skip_mm --min_read_ani 93 -p 96 --skip_plot_generation
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; inStrain profile ../maptodrep96/ME2015-04-11_3300034167.bam ../maptodrep96/drep_96_winners_concat.fna -o ME2015-04-11_3300034167.IS -g ../runprodigal96/drep_96_winners_concat_genes.fna -s instrain_stb.txt --database_mode --skip_mm --min_read_ani 93 -p 96 --skip_plot_generation
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; inStrain profile ../maptodrep96/ME2001-03-13pf_3300033984.bam ../maptodrep96/drep_96_winners_concat.fna -o ME2001-03-13pf_3300033984.IS -g ../runprodigal96/drep_96_winners_concat_genes.fna -s instrain_stb.txt --database_mode --skip_mm --min_read_ani 93 -p 96 --skip_plot_generation
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; inStrain profile ../maptodrep96/ME2001-04-10pf_3300042886.bam ../maptodrep96/drep_96_winners_concat.fna -o ME2001-04-10pf_3300042886.IS -g ../runprodigal96/drep_96_winners_concat_genes.fna -s instrain_stb.txt --database_mode --skip_mm --min_read_ani 93 -p 96 --skip_plot_generation
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; inStrain profile ../maptodrep96/ME2002-02-28pf_3300044568.bam ../maptodrep96/drep_96_winners_concat.fna -o ME2002-02-28pf_3300044568.IS -g ../runprodigal96/drep_96_winners_concat_genes.fna -s instrain_stb.txt --database_mode --skip_mm --min_read_ani 93 -p 96 --skip_plot_generation
+
+```
+
+Dang, it took way longer than the ~3 hrs my test-runs took!  I looked at how long each successful job took, and some took many hours. This means something besides using up memory was the culprit, since these are runs that DID finish. I parsed the job output files to get a list of successful jobs and how long they took:
+
+```{bash, eval = F}
+cat instrain.o751529 | grep Job > Job_completed_list.txt
+cat instrain.o751529 | grep job > job_commands_list.txt
+```
+
+And then I parsed the lists of jobs and looked at the results using `2023-03-22_parse_instrain_failures_again.R`. Then I deleted the folders for runs that didn't finish: `delete_partial-run_folders.sh`, and then I then made a new launcher scripts just for the samples without successful exit codes: `run_instrain_profile_repeat_unfinished.launcher`.  This time I gave the run 30 hrs for 76 jobs on 60 nodes, but AGAIN it exited with TIMEOUT. dang! Now I looked more at which runs were taking so long:
+
+It seems like the time it took was not related to the size of the bam file. (The red dot are the times it took to run in the main run, the blue dots are the time those same commands took alone in a trial run):
+
+![](../figures/2023-03-22_instrain_job_completion_times/Time_vs_BamSize.png){width=50%}
+
+But interestingly there did seem to be a relationship to job number!
+
+![](../figures/2023-03-22_instrain_job_completion_times/Time_vs_JobNumber.png){width=50%}
+
+This seems like it was maybe a TACC problem... why would it matter what order it's run in?? I submitted a TACC ticket but they didn't get back very quickly, so in the meantime I again parsed out which runs were successful from the output file, and made a new submit script for the remaining 19 samples. This time I only did 19 nodes (because only 19 samples left), and I also decreased the threads just in case RAM was the problem.
+
+slurm:
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J unfinishedinstrain2
+#SBATCH -p normal
+#SBATCH -N 19
+#SBATCH -n 19
+#SBATCH -t 25:0:00
+#SBATCH -o instrain_repeat_unfinished_2.o%j
+#SBATCH -e instrain_repeat_unfinished_2.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load launcher
+export LAUNCHER_JOB_FILE=run_instrain_profile_repeat_unfinished_2.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+top of launcher:
+```{bash, eval = F}
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; inStrain profile ../maptodrep96/ME2014-07-24_3300043772.bam ../maptodrep96/drep_96_winners_concat.fna -o ME2014-07-24_3300043772.IS -g ../runprodigal96/drep_96_winners_concat_genes.fna -s instrain_stb.txt --database_mode --skip_mm --min_read_ani 93 -p 64 --skip_plot_generation
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; inStrain profile ../maptodrep96/ME2018-08-06_3300044608.bam ../maptodrep96/drep_96_winners_concat.fna -o ME2018-08-06_3300044608.IS -g ../runprodigal96/drep_96_winners_concat_genes.fna -s instrain_stb.txt --database_mode --skip_mm --min_read_ani 93 -p 64 --skip_plot_generation
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; inStrain profile ../maptodrep96/ME2018-08-14_3300043803.bam ../maptodrep96/drep_96_winners_concat.fna -o ME2018-08-14_3300043803.IS -g ../runprodigal96/drep_96_winners_concat_genes.fna -s instrain_stb.txt --database_mode --skip_mm --min_read_ani 93 -p 64 --skip_plot_generation
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; inStrain profile ../maptodrep96/ME2014-08-29_3300036719.bam ../maptodrep96/drep_96_winners_concat.fna -o ME2014-08-29_3300036719.IS -g ../runprodigal96/drep_96_winners_concat_genes.fna -s instrain_stb.txt --database_mode --skip_mm --min_read_ani 93 -p 64 --skip_plot_generation
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; inStrain profile ../maptodrep96/ME2015-08-22_3300042470.bam ../maptodrep96/drep_96_winners_concat.fna -o ME2015-08-22_3300042470.IS -g ../runprodigal96/drep_96_winners_concat_genes.fna -s instrain_stb.txt --database_mode --skip_mm --min_read_ani 93 -p 64 --skip_plot_generation
+```
+
+And now it finished in 07:41:12! So there's no way to know because I didn't feel like doing follow-up tests, but my 2 theories are:
+
+- needed to reduce threads because for some reason some of them reached the RAM limit and silently timed out.  
+- needed to run fewer in parallel because there is a lot of i/o (well, a lot of large files created...), so it slowed all i/o across the filesystem with 60 jobs in parallel.  
+
+But anyway, it finished finally! I rsynced it to the NAS to work with the rest of the way from there. Note that on TACC is is much larger than on the NAS, but I looked it up and this is because they have different file systems and the NAS maybe compresses it a little somehow. In any case, you can see the "true" file sizes with `du -b` and looking that way they match.  
+
+## combine output files
+
+The gene info output files are too big to fit in RAM on my laptop, so I used Rscript to create and use a combined file on the server. I used midgard for now.  
+
+First, set up R and packages:  
+
+```{r, eval = F}
+> sessionInfo()
+R version 4.2.3 (2023-03-15)
+Platform: x86_64-pc-linux-gnu (64-bit)
+Running under: Ubuntu 18.04.6 LTS
+
+Matrix products: default
+BLAS:   /usr/lib/x86_64-linux-gnu/blas/libblas.so.3.7.1
+LAPACK: /usr/lib/x86_64-linux-gnu/lapack/liblapack.so.3.7.1
+
+locale:
+ [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C
+ [3] LC_TIME=en_US.UTF-8        LC_COLLATE=en_US.UTF-8
+ [5] LC_MONETARY=en_US.UTF-8    LC_MESSAGES=en_US.UTF-8
+ [7] LC_PAPER=en_US.UTF-8       LC_NAME=C
+ [9] LC_ADDRESS=C               LC_TELEPHONE=C
+[11] LC_MEASUREMENT=en_US.UTF-8 LC_IDENTIFICATION=C
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base
+
+other attached packages:
+[1] lubridate_1.9.2   data.table_1.14.8
+
+loaded via a namespace (and not attached):
+[1] compiler_4.2.3   generics_0.1.3   timechange_0.2.0
+```
+
+Now source the scripts: The input besides the inStrain output is the bin key with checkM, GTDB, and dRep info per bin: `drep_results_all_genomes_0.96.rds`, and the `seasons` object from the `limony` R package. I couldn't get devtools to install on the server so I couldn't install limony, but all I needed was that one piece of data so I just added it manually.
+
+```{bash, eval = F}
+$ pwd
+/home/rrohwer/processinstrain96
+
+$ ls -1
+combine_gene_info.R
+combine_genome_info.R
+drep_results_all_genomes_0.96.rds
+limony_seasons.rds
+
+$ Rscript combine_genome_info.R ../../yggshare/current_projects/TYMEFLIES/tymeflies/runinstrain96/ drep_results_all_genomes_0.96.rds limony_seasons.rds 40
+$ Rscript combine_gene_info.R ../../yggshare/current_projects/TYMEFLIES/tymeflies/runinstrain96/ drep_results_all_genomes_0.96.rds limony_seasons.rds 40
+```
+
+I ran this using `tmux` because the gene info one took quite a while- a few seconds per file so an hour or two. The resulting gene info file is 22GB zipped, so I'll have to keep working with it on the server. My computer RAM is only 32 GB. 
+

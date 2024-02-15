@@ -1,0 +1,1 @@
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; inStrain profile ../maptodrep96/ME2018-06-14_3300042564.bam ../maptodrep96/drep_96_winners_concat.fna -o ME2018-06-14_3300042564.IS -g ../runprodigal96/drep_96_winners_concat_genes.fna -s instrain_stb.txt --database_mode --skip_mm --min_read_ani 93 -p 128 --skip_plot_generation

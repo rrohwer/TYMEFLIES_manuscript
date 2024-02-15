@@ -1,0 +1,27 @@
+# ignore these files from git tracking
+
+# don't track R project files
+.DS_Store
+.Rhistory
+TYMEFLIES.Rproj
+.Rproj.user
+.RData
+
+
+# soft simlink to non-script files that are synced via dropbox separately from the git repo.
+# this allows you to still use local paths to the ignored folders in your repos,
+# and to have those ignored folders still update btwn computers,
+# while also not hosting the repo within dropbox so that there is a separate version on each computer.
+# set up link on a new computer with
+# ln -s YOURPATHTOTHEREALFOLDER nameoffolderinyourrepo
+
+data
+figures
+pop
+
+# generated scripts
+server-scripts/generated/*
+
+# rendered markdown notes (just track the rmd)
+notes/*/*.html
+notes/*.html

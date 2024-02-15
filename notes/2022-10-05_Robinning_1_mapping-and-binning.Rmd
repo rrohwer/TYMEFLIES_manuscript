@@ -1,0 +1,355 @@
+---
+title: "Robinning"
+subtitle: "1- mapping and binning"
+author: "Robin Rohwer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{css, echo=FALSE}
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: scroll !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+```
+
+
+
+## TACC mapping and binning
+
+These are notes on my binning workflow, aka "Robinning"!  
+
+I used the Texas Advanced Computing Center (TACC) Lonestar6 server to bin 85,684 MAGs out of my 471 Lake Mendota metagenomes, which resulted in 2,644 de-replicated MAGs.  
+
+These notes document the bin creation steps, including cross mapping (bbmap) and binning (metabat2). All scripts and data are in the TYMEFLIES github repo and data dropbox folder. Large input and output data files are located in Robin's Corral folder on TACC (`/corral/utexas/MCB22035/tymeflies/`), on Robin's external hard drive, and on yggshare in the TYMEFLIES current project folder.    
+
+Cross-mapping samples and then creating bins was done as a single workflow on TACC. This took about a month to troubsleshoot and a month to run and used over 15,000 node hours.  
+
+The script that generates all the TACC slurm and launcher scripts is:  
+`TYMEFLIES/server-scripts/written/2022-06-29_generate_slurm_scripts/per_group_scripts.R`
+  
+The step-tracking excel sheet, with actual run-times, is in  
+`TYMEFLIES/data/2022-07-07_tracking_mapping/tracking_jobs.xlsx`.  
+ 
+## creating mapping groups  
+
+We decided to cross-map in ~50-sample groups. Jason Woodhouse at IGB Berlin advised that they tested improvement with different binning techniques, and that improvement levelled off after 100-sample groups and that adding concoct and maxbin also had minimal gains over metabat2 when lots of samples were used. In testing on TACC, concoct and maxbin both would have taken over 48 hrs (the TACC limit) to generate their respective depth files, so I only used metabat2. I used 50-sample sets instead of 100-sample sets because the compute resources scales exponentially with how many you cross-map, and I wanted bins by the end of summer. So it was a practical decision.  
+
+To decide on cross-mapping groups, I combined years into approximately 50-sample groups while keeping all the same-year samples in the same group. I figured this grouping out manually, and then  
+
+created a list of all the groups in the script:  
+`TYMEFLIES/server-scripts/written/2022-06-27_binning_groups/2022-06-27_1_get_mapping_sample_lists.R`  
+
+and saved the groups in:  
+`TYMEFLIES/data/2022-06-27_binning_groups/mapping_groups_list.rds`  
+
+## calculating nodes and tasks
+
+The way launcher works, it's supposed to cycle through the lines of the launcher script with all of the nodes you give it. For example, if you give it 2 nodes and 10 tasks per node, and 1000 launcher lines, it should run the first 20 lines, then when it finished those the next 20, until it finishes all 1000. But this didn't work and nobody could figure out why! (note: later I got it to work with the option `export LAUNCHER_SCHED=interleaved` so somehow the default doesn't work for me and I had to specify how to choose which task to choose next.) Anyway, for this process I fixed it by choosing the nodes `N` and the tasks per node `n` that were equal or more than my launcher lines, and then adding extra lines to make it a perfect match. These are the functions that calculated `N` and `n` for me. They're in the `2022-06-29_generate_slurm_scripts/per_group_scripts.R` file.  
+
+(multi-threaded means that the tasks are like bbmap and efficiently paralellized, so adding more tasks to the node makes the one already on it go slower. single-threaded means that the tasks were not using all the threads, so adding more tasks to the node didn't change the run time)
+```{r, eval=FALSE}
+get.slum.specs.multi.threaded <- function(tasks.per.node, min.per.task, sample.names){
+  # tasks.per.node is the highest tasks per node allowed
+  tot.tasks <- length(sample.names)
+  N <- ceiling(tot.tasks / tasks.per.node)
+  if (N == 0){
+    N <- 1
+  }
+  adj.tasks.per.node <- ceiling(tot.tasks / N)
+  n <- adj.tasks.per.node * N
+  extra.tasks <- n - tot.tasks
+  threads <- floor(128 / adj.tasks.per.node)
+  m <- ceiling(min.per.task * adj.tasks.per.node)
+  t <- get.timestamp.from.minutes(m = m)
+  cat("N = ",N," n = ",n, " total = ",tot.tasks,"\ntime = ",t," (",min.per.task," min each)","\nextra filler lines = ",extra.tasks , sep = "", "\nmax tasks/node = ", tasks.per.node, ", adj. tasks per node = ", adj.tasks.per.node)
+  return(list("n"=n,"N"=N,"t"=t,"threads" = threads,"filler.lines" = extra.tasks))
+}
+```
+```{r, eval=FALSE}
+get.slum.specs.single.threaded <- function(tasks.per.node, min.per.task, sample.names){
+  tot.tasks <- length(sample.names)
+  N <- ceiling(tot.tasks / tasks.per.node)
+  if (N == 0){
+    N <- 1
+  }
+  adj.tasks.per.node <- ceiling(tot.tasks / N)
+  n <- adj.tasks.per.node * N
+  extra.tasks <- n - tot.tasks
+  threads <- floor(128 / adj.tasks.per.node)
+  m <- min.per.task 
+  t <- get.timestamp.from.minutes(m = m)
+  cat("N = ",N," n = ",n, " total = ",tot.tasks,"\ntime = ",t," (",min.per.task," min each)","\nextra filler lines = ",extra.tasks , sep = "", "\nmax tasks/node = ", tasks.per.node, ", adj. tasks per node = ", adj.tasks.per.node)
+  return(list("n"=n,"N"=N,"t"=t,"threads" = threads,"filler.lines" = extra.tasks))
+}
+
+```
+
+## step 0 set-up  
+
+This step created per-sample folders in SCRATCH directory, added the fastq filtered read files for the whole group and the relevant fasta assembly file to each folder, and added all the scripts to the folders. Did this mean there were lots of versions of the fastq files copied into SCRATCH at once? Yes. but that was OK, there's no limit on storage in scratch and they don't want you to reference WORK in your scripts. It was easier to organize things in per sample-folders, and the data storage wasn't an issue, so that's what I did.  
+
+This took ~ 18 minutes to run.
+
+example slurm:  
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J setup
+#SBATCH -p normal
+#SBATCH -N 2
+#SBATCH -n 52
+#SBATCH -t 4:20:00
+#SBATCH -o setup.o%j
+#SBATCH -e setup.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load biocontainers
+module load launcher
+export OMP_NUM_THREADS=4
+export LAUNCHER_JOB_FILE=step.0.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+example launcher:
+```{bash, eval = F}
+mkdir ME2018-01-19_3300042384 ; cd ME2018-01-19_3300042384 ; cp /work/08922/rrohwer/stampede2/tymeflies/assembled_contigs/ME2018-01-19_3300042384_assembled_contigs.fasta ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-01-19_3300042384_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-11_3300037516_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-20_3300034022_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-25_3300042375_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-07_3300042481_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-24_3300044972_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-29_3300042473_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-05_3300043470_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-07_3300034013_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-14_3300042564_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-18_3300042544_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-21_3300042341_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-26_3300042295_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-28_3300042559_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-03_3300044637_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-06_3300042522_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-09_3300042349_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-11_3300044614_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-17_3300044591_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-19_3300042331_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-24_3300044631_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-27_3300044621_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-01_3300042480_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-06_3300044608_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-08_3300044636_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-14_3300043803_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-16_3300044615_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-20_3300044629_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-25_3300042355_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-31_3300042380_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-04_3300043099_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-14_3300042561_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-22_3300044646_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-29_3300049629_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-05_3300044616_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-13_3300044632_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-24_3300044533_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-31_3300042386_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300034116_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042940_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042510_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042399_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042901_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08_3300044516_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300046832_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-02-15D0_3300044639_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-02-22_3300042369_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-01_3300042479_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-08_3300044859_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-19_3300042506_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-04-20_3300044522_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-04-24_3300042353_filtered-reads.fastq.gz ./ ; cp ../step.2.slurm ./ ; cp ../step.2.launcher ./ ; cp ../step.3.slurm ./ ; cp ../step.3.launcher ./ ; cd ../
+mkdir ME2018-04-11_3300037516 ; cd ME2018-04-11_3300037516 ; cp /work/08922/rrohwer/stampede2/tymeflies/assembled_contigs/ME2018-04-11_3300037516_assembled_contigs.fasta ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-01-19_3300042384_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-11_3300037516_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-20_3300034022_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-25_3300042375_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-07_3300042481_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-24_3300044972_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-29_3300042473_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-05_3300043470_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-07_3300034013_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-14_3300042564_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-18_3300042544_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-21_3300042341_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-26_3300042295_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-28_3300042559_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-03_3300044637_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-06_3300042522_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-09_3300042349_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-11_3300044614_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-17_3300044591_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-19_3300042331_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-24_3300044631_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-27_3300044621_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-01_3300042480_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-06_3300044608_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-08_3300044636_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-14_3300043803_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-16_3300044615_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-20_3300044629_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-25_3300042355_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-31_3300042380_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-04_3300043099_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-14_3300042561_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-22_3300044646_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-29_3300049629_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-05_3300044616_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-13_3300044632_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-24_3300044533_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-31_3300042386_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300034116_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042940_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042510_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042399_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042901_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08_3300044516_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300046832_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-02-15D0_3300044639_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-02-22_3300042369_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-01_3300042479_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-08_3300044859_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-19_3300042506_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-04-20_3300044522_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-04-24_3300042353_filtered-reads.fastq.gz ./ ; cp ../step.2.slurm ./ ; cp ../step.2.launcher ./ ; cp ../step.3.slurm ./ ; cp ../step.3.launcher ./ ; cd ../
+mkdir ME2018-04-20_3300034022 ; cd ME2018-04-20_3300034022 ; cp /work/08922/rrohwer/stampede2/tymeflies/assembled_contigs/ME2018-04-20_3300034022_assembled_contigs.fasta ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-01-19_3300042384_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-11_3300037516_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-20_3300034022_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-25_3300042375_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-07_3300042481_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-24_3300044972_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-29_3300042473_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-05_3300043470_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-07_3300034013_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-14_3300042564_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-18_3300042544_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-21_3300042341_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-26_3300042295_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-28_3300042559_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-03_3300044637_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-06_3300042522_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-09_3300042349_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-11_3300044614_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-17_3300044591_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-19_3300042331_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-24_3300044631_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-27_3300044621_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-01_3300042480_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-06_3300044608_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-08_3300044636_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-14_3300043803_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-16_3300044615_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-20_3300044629_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-25_3300042355_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-31_3300042380_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-04_3300043099_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-14_3300042561_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-22_3300044646_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-29_3300049629_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-05_3300044616_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-13_3300044632_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-24_3300044533_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-31_3300042386_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300034116_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042940_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042510_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042399_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042901_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08_3300044516_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300046832_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-02-15D0_3300044639_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-02-22_3300042369_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-01_3300042479_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-08_3300044859_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-19_3300042506_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-04-20_3300044522_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-04-24_3300042353_filtered-reads.fastq.gz ./ ; cp ../step.2.slurm ./ ; cp ../step.2.launcher ./ ; cp ../step.3.slurm ./ ; cp ../step.3.launcher ./ ; cd ../
+mkdir ME2018-04-25_3300042375 ; cd ME2018-04-25_3300042375 ; cp /work/08922/rrohwer/stampede2/tymeflies/assembled_contigs/ME2018-04-25_3300042375_assembled_contigs.fasta ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-01-19_3300042384_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-11_3300037516_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-20_3300034022_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-25_3300042375_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-07_3300042481_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-24_3300044972_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-29_3300042473_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-05_3300043470_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-07_3300034013_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-14_3300042564_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-18_3300042544_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-21_3300042341_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-26_3300042295_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-28_3300042559_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-03_3300044637_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-06_3300042522_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-09_3300042349_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-11_3300044614_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-17_3300044591_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-19_3300042331_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-24_3300044631_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-27_3300044621_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-01_3300042480_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-06_3300044608_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-08_3300044636_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-14_3300043803_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-16_3300044615_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-20_3300044629_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-25_3300042355_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-31_3300042380_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-04_3300043099_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-14_3300042561_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-22_3300044646_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-29_3300049629_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-05_3300044616_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-13_3300044632_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-24_3300044533_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-31_3300042386_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300034116_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042940_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042510_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042399_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042901_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08_3300044516_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300046832_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-02-15D0_3300044639_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-02-22_3300042369_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-01_3300042479_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-08_3300044859_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-19_3300042506_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-04-20_3300044522_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-04-24_3300042353_filtered-reads.fastq.gz ./ ; cp ../step.2.slurm ./ ; cp ../step.2.launcher ./ ; cp ../step.3.slurm ./ ; cp ../step.3.launcher ./ ; cd ../
+mkdir ME2018-05-07_3300042481 ; cd ME2018-05-07_3300042481 ; cp /work/08922/rrohwer/stampede2/tymeflies/assembled_contigs/ME2018-05-07_3300042481_assembled_contigs.fasta ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-01-19_3300042384_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-11_3300037516_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-20_3300034022_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-04-25_3300042375_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-07_3300042481_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-24_3300044972_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-05-29_3300042473_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-05_3300043470_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-07_3300034013_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-14_3300042564_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-18_3300042544_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-21_3300042341_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-26_3300042295_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-06-28_3300042559_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-03_3300044637_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-06_3300042522_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-09_3300042349_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-11_3300044614_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-17_3300044591_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-19_3300042331_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-24_3300044631_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-07-27_3300044621_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-01_3300042480_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-06_3300044608_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-08_3300044636_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-14_3300043803_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-16_3300044615_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-20_3300044629_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-25_3300042355_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-08-31_3300042380_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-04_3300043099_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-14_3300042561_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-22_3300044646_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-09-29_3300049629_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-05_3300044616_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-13_3300044632_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-24_3300044533_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-10-31_3300042386_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300034116_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042940_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042510_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042399_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300042901_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08_3300044516_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2018-11-08GD_3300046832_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-02-15D0_3300044639_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-02-22_3300042369_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-01_3300042479_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-08_3300044859_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-03-19_3300042506_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-04-20_3300044522_filtered-reads.fastq.gz ./ ; cp /work/08922/rrohwer/stampede2/tymeflies/filtered_reads/ME2019-04-24_3300042353_filtered-reads.fastq.gz ./ ; cp ../step.2.slurm ./ ; cp ../step.2.launcher ./ ; cp ../step.3.slurm ./ ; cp ../step.3.launcher ./ ; cd ../
+
+```
+
+## step 1 bbmap ref
+
+This step created the bbmap reference files for all of the sample folders at once. 
+
+This took about an hour and a half to run for the entire mapping group. It took about 5 minutes for each assembly, but was memory limited in terms of paralellizing it (15 GB each).
+
+example slurm:  
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J bbmap_refs
+#SBATCH -p normal
+#SBATCH -N 6
+#SBATCH -n 54
+#SBATCH -t 0:10:00
+#SBATCH -o bbmap_refs.o%j
+#SBATCH -e bbmap_refs.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load biocontainers
+module load launcher
+export OMP_NUM_THREADS=14
+export LAUNCHER_JOB_FILE=step.1.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+example launcher:
+```{bash, eval = F}
+module load bbmap; cd ME2018-01-19_3300042384; bbmap.sh ref=ME2018-01-19_3300042384_assembled_contigs.fasta t=14 usemodulo
+module load bbmap; cd ME2018-04-11_3300037516; bbmap.sh ref=ME2018-04-11_3300037516_assembled_contigs.fasta t=14 usemodulo
+module load bbmap; cd ME2018-04-20_3300034022; bbmap.sh ref=ME2018-04-20_3300034022_assembled_contigs.fasta t=14 usemodulo
+module load bbmap; cd ME2018-04-25_3300042375; bbmap.sh ref=ME2018-04-25_3300042375_assembled_contigs.fasta t=14 usemodulo
+module load bbmap; cd ME2018-05-07_3300042481; bbmap.sh ref=ME2018-05-07_3300042481_assembled_contigs.fasta t=14 usemodulo
+```
+
+## step 2 mapping
+
+This step mapped the metagenomes from every sample in the mapping-group to an individual assembly. It had to be submitted separately for each assembly file. This results in a lot of manual submissions, but it's a computationally expensive step so needed to be spread on multiple nodes for each assembly.
+
+This took usually 1-2 hours to run the way I paralellized it. I broke down how long each mapping step took individually (in the script `2022-08-08_how_long_have_steps_taken.R`), and on average it took 25 minutes per metagenome-assembly mapping pair. Note that occasionally for reasons I can't figure out it would time out at 1 or 2 hours though, and when I'd re-run just that step it would finish in the typical amount of time in the re-run. My best guess is that other jobs on TACC impact each other- maybe the I/O intensity of other jobs makes a difference or something?
+
+![](../figures/2022-08-08_how_long_did_mapping_sorting_take/mapping_times.png){width=75%}
+
+example slurm:  
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J mapping
+#SBATCH -p normal
+#SBATCH -N 13
+#SBATCH -n 52
+#SBATCH -t 4:0:00
+#SBATCH -o mapping.o%j
+#SBATCH -e mapping.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load biocontainers
+module load launcher
+export OMP_NUM_THREADS=32
+export LAUNCHER_JOB_FILE=step.2.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+example launcher:
+```{bash, eval = F}
+module load bbmap; bbmap.sh in=ME2018-01-19_3300042384_filtered-reads.fastq.gz out=ME2018-01-19_3300042384.sam covstats=ME2018-01-19_3300042384.cov usemodulo
+module load bbmap; bbmap.sh in=ME2018-04-11_3300037516_filtered-reads.fastq.gz out=ME2018-04-11_3300037516.sam covstats=ME2018-04-11_3300037516.cov usemodulo
+module load bbmap; bbmap.sh in=ME2018-04-20_3300034022_filtered-reads.fastq.gz out=ME2018-04-20_3300034022.sam covstats=ME2018-04-20_3300034022.cov usemodulo
+module load bbmap; bbmap.sh in=ME2018-04-25_3300042375_filtered-reads.fastq.gz out=ME2018-04-25_3300042375.sam covstats=ME2018-04-25_3300042375.cov usemodulo
+module load bbmap; bbmap.sh in=ME2018-05-07_3300042481_filtered-reads.fastq.gz out=ME2018-05-07_3300042481.sam covstats=ME2018-05-07_3300042481.cov usemodulo
+```
+
+## step 3 sorting
+
+This step takes each of the generated .sam files (one per metagenome-assembly pair), and uses Samtools to sort them and convert them to .bam files. Because this step also scales exponentially like the mapping step, it was submitted per assembly file because each assembly file generated 50 or so sam files that needed to be sorted.  
+
+This usually took 10-20 minutes to run the way I parallelized it. On average it took 5 minutes per assembly-metagenome pair, but it is memory-limited taking about 75GB each. It also only partially parallelizes. Like the mapping, sometimes it inexplicably timed out and then took the expected time when I re-ran it.
+
+![](../figures/2022-08-08_how_long_did_mapping_sorting_take/sorting_times.png){width=75%}
+
+
+example slurm:  
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J sorting
+#SBATCH -p normal
+#SBATCH -N 18
+#SBATCH -n 54
+#SBATCH -t 1:0:00
+#SBATCH -o sorting.o%j
+#SBATCH -e sorting.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load biocontainers
+module load launcher
+export OMP_NUM_THREADS=42
+export LAUNCHER_JOB_FILE=step.3.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+example launcher:
+```{bash, eval = F}
+module load samtools; samtools sort -o ME2018-01-19_3300042384.bam -O bam -@ 42 ME2018-01-19_3300042384.sam; rm ME2018-01-19_3300042384.sam; rm ME2018-01-19_3300042384_filtered-reads.fastq.gz
+module load samtools; samtools sort -o ME2018-04-11_3300037516.bam -O bam -@ 42 ME2018-04-11_3300037516.sam; rm ME2018-04-11_3300037516.sam; rm ME2018-04-11_3300037516_filtered-reads.fastq.gz
+module load samtools; samtools sort -o ME2018-04-20_3300034022.bam -O bam -@ 42 ME2018-04-20_3300034022.sam; rm ME2018-04-20_3300034022.sam; rm ME2018-04-20_3300034022_filtered-reads.fastq.gz
+module load samtools; samtools sort -o ME2018-04-25_3300042375.bam -O bam -@ 42 ME2018-04-25_3300042375.sam; rm ME2018-04-25_3300042375.sam; rm ME2018-04-25_3300042375_filtered-reads.fastq.gz
+module load samtools; samtools sort -o ME2018-05-07_3300042481.bam -O bam -@ 42 ME2018-05-07_3300042481.sam; rm ME2018-05-07_3300042481.sam; rm ME2018-05-07_3300042481_filtered-reads.fastq.gz
+```
+
+## step 4 depth
+
+This step runs metabat2 to generate the depth file that metabat uses to create bins. Similar info is in the bbmap output, but metabat calculates the coverage slightly differently because the numbers don't exactly match between the files. This is a single-threaded process, but each uses only ~ 5GB at a time so I ran it on all the assembly folders in a group at once. It took 15-20 hours, so that is also how long each once would take individually. (Note: this is the step that took more than 48 hrs to run with Concoct and MaxBin, which is why I only used metabat2)
+
+example slurm:  
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J depths
+#SBATCH -p normal
+#SBATCH -N 1
+#SBATCH -n 52
+#SBATCH -t 34:40:00
+#SBATCH -o depths.o%j
+#SBATCH -e depths.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load biocontainers
+module load launcher
+export OMP_NUM_THREADS=2
+export LAUNCHER_JOB_FILE=step.4.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+example launcher:
+```{bash, eval = F}
+module load metabat2; cd ME2018-01-19_3300042384; jgi_summarize_bam_contig_depths --outputDepth ME2018-01-19_3300042384.depth ME2018-01-19_3300042384.bam ME2018-04-11_3300037516.bam ME2018-04-20_3300034022.bam ME2018-04-25_3300042375.bam ME2018-05-07_3300042481.bam ME2018-05-24_3300044972.bam ME2018-05-29_3300042473.bam ME2018-06-05_3300043470.bam ME2018-06-07_3300034013.bam ME2018-06-14_3300042564.bam ME2018-06-18_3300042544.bam ME2018-06-21_3300042341.bam ME2018-06-26_3300042295.bam ME2018-06-28_3300042559.bam ME2018-07-03_3300044637.bam ME2018-07-06_3300042522.bam ME2018-07-09_3300042349.bam ME2018-07-11_3300044614.bam ME2018-07-17_3300044591.bam ME2018-07-19_3300042331.bam ME2018-07-24_3300044631.bam ME2018-07-27_3300044621.bam ME2018-08-01_3300042480.bam ME2018-08-06_3300044608.bam ME2018-08-08_3300044636.bam ME2018-08-14_3300043803.bam ME2018-08-16_3300044615.bam ME2018-08-20_3300044629.bam ME2018-08-25_3300042355.bam ME2018-08-31_3300042380.bam ME2018-09-04_3300043099.bam ME2018-09-14_3300042561.bam ME2018-09-22_3300044646.bam ME2018-09-29_3300049629.bam ME2018-10-05_3300044616.bam ME2018-10-13_3300044632.bam ME2018-10-24_3300044533.bam ME2018-10-31_3300042386.bam ME2018-11-08GD_3300034116.bam ME2018-11-08GD_3300042940.bam ME2018-11-08GD_3300042510.bam ME2018-11-08GD_3300042399.bam ME2018-11-08GD_3300042901.bam ME2018-11-08_3300044516.bam ME2018-11-08GD_3300046832.bam ME2019-02-15D0_3300044639.bam ME2019-02-22_3300042369.bam ME2019-03-01_3300042479.bam ME2019-03-08_3300044859.bam ME2019-03-19_3300042506.bam ME2019-04-20_3300044522.bam ME2019-04-24_3300042353.bam
+module load metabat2; cd ME2018-04-11_3300037516; jgi_summarize_bam_contig_depths --outputDepth ME2018-04-11_3300037516.depth ME2018-01-19_3300042384.bam ME2018-04-11_3300037516.bam ME2018-04-20_3300034022.bam ME2018-04-25_3300042375.bam ME2018-05-07_3300042481.bam ME2018-05-24_3300044972.bam ME2018-05-29_3300042473.bam ME2018-06-05_3300043470.bam ME2018-06-07_3300034013.bam ME2018-06-14_3300042564.bam ME2018-06-18_3300042544.bam ME2018-06-21_3300042341.bam ME2018-06-26_3300042295.bam ME2018-06-28_3300042559.bam ME2018-07-03_3300044637.bam ME2018-07-06_3300042522.bam ME2018-07-09_3300042349.bam ME2018-07-11_3300044614.bam ME2018-07-17_3300044591.bam ME2018-07-19_3300042331.bam ME2018-07-24_3300044631.bam ME2018-07-27_3300044621.bam ME2018-08-01_3300042480.bam ME2018-08-06_3300044608.bam ME2018-08-08_3300044636.bam ME2018-08-14_3300043803.bam ME2018-08-16_3300044615.bam ME2018-08-20_3300044629.bam ME2018-08-25_3300042355.bam ME2018-08-31_3300042380.bam ME2018-09-04_3300043099.bam ME2018-09-14_3300042561.bam ME2018-09-22_3300044646.bam ME2018-09-29_3300049629.bam ME2018-10-05_3300044616.bam ME2018-10-13_3300044632.bam ME2018-10-24_3300044533.bam ME2018-10-31_3300042386.bam ME2018-11-08GD_3300034116.bam ME2018-11-08GD_3300042940.bam ME2018-11-08GD_3300042510.bam ME2018-11-08GD_3300042399.bam ME2018-11-08GD_3300042901.bam ME2018-11-08_3300044516.bam ME2018-11-08GD_3300046832.bam ME2019-02-15D0_3300044639.bam ME2019-02-22_3300042369.bam ME2019-03-01_3300042479.bam ME2019-03-08_3300044859.bam ME2019-03-19_3300042506.bam ME2019-04-20_3300044522.bam ME2019-04-24_3300042353.bam
+module load metabat2; cd ME2018-04-20_3300034022; jgi_summarize_bam_contig_depths --outputDepth ME2018-04-20_3300034022.depth ME2018-01-19_3300042384.bam ME2018-04-11_3300037516.bam ME2018-04-20_3300034022.bam ME2018-04-25_3300042375.bam ME2018-05-07_3300042481.bam ME2018-05-24_3300044972.bam ME2018-05-29_3300042473.bam ME2018-06-05_3300043470.bam ME2018-06-07_3300034013.bam ME2018-06-14_3300042564.bam ME2018-06-18_3300042544.bam ME2018-06-21_3300042341.bam ME2018-06-26_3300042295.bam ME2018-06-28_3300042559.bam ME2018-07-03_3300044637.bam ME2018-07-06_3300042522.bam ME2018-07-09_3300042349.bam ME2018-07-11_3300044614.bam ME2018-07-17_3300044591.bam ME2018-07-19_3300042331.bam ME2018-07-24_3300044631.bam ME2018-07-27_3300044621.bam ME2018-08-01_3300042480.bam ME2018-08-06_3300044608.bam ME2018-08-08_3300044636.bam ME2018-08-14_3300043803.bam ME2018-08-16_3300044615.bam ME2018-08-20_3300044629.bam ME2018-08-25_3300042355.bam ME2018-08-31_3300042380.bam ME2018-09-04_3300043099.bam ME2018-09-14_3300042561.bam ME2018-09-22_3300044646.bam ME2018-09-29_3300049629.bam ME2018-10-05_3300044616.bam ME2018-10-13_3300044632.bam ME2018-10-24_3300044533.bam ME2018-10-31_3300042386.bam ME2018-11-08GD_3300034116.bam ME2018-11-08GD_3300042940.bam ME2018-11-08GD_3300042510.bam ME2018-11-08GD_3300042399.bam ME2018-11-08GD_3300042901.bam ME2018-11-08_3300044516.bam ME2018-11-08GD_3300046832.bam ME2019-02-15D0_3300044639.bam ME2019-02-22_3300042369.bam ME2019-03-01_3300042479.bam ME2019-03-08_3300044859.bam ME2019-03-19_3300042506.bam ME2019-04-20_3300044522.bam ME2019-04-24_3300042353.bam
+module load metabat2; cd ME2018-04-25_3300042375; jgi_summarize_bam_contig_depths --outputDepth ME2018-04-25_3300042375.depth ME2018-01-19_3300042384.bam ME2018-04-11_3300037516.bam ME2018-04-20_3300034022.bam ME2018-04-25_3300042375.bam ME2018-05-07_3300042481.bam ME2018-05-24_3300044972.bam ME2018-05-29_3300042473.bam ME2018-06-05_3300043470.bam ME2018-06-07_3300034013.bam ME2018-06-14_3300042564.bam ME2018-06-18_3300042544.bam ME2018-06-21_3300042341.bam ME2018-06-26_3300042295.bam ME2018-06-28_3300042559.bam ME2018-07-03_3300044637.bam ME2018-07-06_3300042522.bam ME2018-07-09_3300042349.bam ME2018-07-11_3300044614.bam ME2018-07-17_3300044591.bam ME2018-07-19_3300042331.bam ME2018-07-24_3300044631.bam ME2018-07-27_3300044621.bam ME2018-08-01_3300042480.bam ME2018-08-06_3300044608.bam ME2018-08-08_3300044636.bam ME2018-08-14_3300043803.bam ME2018-08-16_3300044615.bam ME2018-08-20_3300044629.bam ME2018-08-25_3300042355.bam ME2018-08-31_3300042380.bam ME2018-09-04_3300043099.bam ME2018-09-14_3300042561.bam ME2018-09-22_3300044646.bam ME2018-09-29_3300049629.bam ME2018-10-05_3300044616.bam ME2018-10-13_3300044632.bam ME2018-10-24_3300044533.bam ME2018-10-31_3300042386.bam ME2018-11-08GD_3300034116.bam ME2018-11-08GD_3300042940.bam ME2018-11-08GD_3300042510.bam ME2018-11-08GD_3300042399.bam ME2018-11-08GD_3300042901.bam ME2018-11-08_3300044516.bam ME2018-11-08GD_3300046832.bam ME2019-02-15D0_3300044639.bam ME2019-02-22_3300042369.bam ME2019-03-01_3300042479.bam ME2019-03-08_3300044859.bam ME2019-03-19_3300042506.bam ME2019-04-20_3300044522.bam ME2019-04-24_3300042353.bam
+module load metabat2; cd ME2018-05-07_3300042481; jgi_summarize_bam_contig_depths --outputDepth ME2018-05-07_3300042481.depth ME2018-01-19_3300042384.bam ME2018-04-11_3300037516.bam ME2018-04-20_3300034022.bam ME2018-04-25_3300042375.bam ME2018-05-07_3300042481.bam ME2018-05-24_3300044972.bam ME2018-05-29_3300042473.bam ME2018-06-05_3300043470.bam ME2018-06-07_3300034013.bam ME2018-06-14_3300042564.bam ME2018-06-18_3300042544.bam ME2018-06-21_3300042341.bam ME2018-06-26_3300042295.bam ME2018-06-28_3300042559.bam ME2018-07-03_3300044637.bam ME2018-07-06_3300042522.bam ME2018-07-09_3300042349.bam ME2018-07-11_3300044614.bam ME2018-07-17_3300044591.bam ME2018-07-19_3300042331.bam ME2018-07-24_3300044631.bam ME2018-07-27_3300044621.bam ME2018-08-01_3300042480.bam ME2018-08-06_3300044608.bam ME2018-08-08_3300044636.bam ME2018-08-14_3300043803.bam ME2018-08-16_3300044615.bam ME2018-08-20_3300044629.bam ME2018-08-25_3300042355.bam ME2018-08-31_3300042380.bam ME2018-09-04_3300043099.bam ME2018-09-14_3300042561.bam ME2018-09-22_3300044646.bam ME2018-09-29_3300049629.bam ME2018-10-05_3300044616.bam ME2018-10-13_3300044632.bam ME2018-10-24_3300044533.bam ME2018-10-31_3300042386.bam ME2018-11-08GD_3300034116.bam ME2018-11-08GD_3300042940.bam ME2018-11-08GD_3300042510.bam ME2018-11-08GD_3300042399.bam ME2018-11-08GD_3300042901.bam ME2018-11-08_3300044516.bam ME2018-11-08GD_3300046832.bam ME2019-02-15D0_3300044639.bam ME2019-02-22_3300042369.bam ME2019-03-01_3300042479.bam ME2019-03-08_3300044859.bam ME2019-03-19_3300042506.bam ME2019-04-20_3300044522.bam ME2019-04-24_3300042353.bam
+
+```
+
+## step 5 binning
+
+This is the step where metabat2 actually makes the bins, and it's pretty quick, about an hour. It is single-threaded, so I ran once for the whole mapping group.
+
+example slurm:  
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J metabat
+#SBATCH -p normal
+#SBATCH -N 2
+#SBATCH -n 52
+#SBATCH -t 17:20:00
+#SBATCH -o metabat.o%j
+#SBATCH -e metabat.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load biocontainers
+module load launcher
+export OMP_NUM_THREADS=4
+export LAUNCHER_JOB_FILE=step.5.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+example launcher:
+```{bash, eval = F}
+module load metabat2; cd ME2018-01-19_3300042384; metabat2 -i ME2018-01-19_3300042384_assembled_contigs.fasta -a ME2018-01-19_3300042384.depth -o ME2018-01-19_3300042384/bin -t 4
+module load metabat2; cd ME2018-04-11_3300037516; metabat2 -i ME2018-04-11_3300037516_assembled_contigs.fasta -a ME2018-04-11_3300037516.depth -o ME2018-04-11_3300037516/bin -t 4
+module load metabat2; cd ME2018-04-20_3300034022; metabat2 -i ME2018-04-20_3300034022_assembled_contigs.fasta -a ME2018-04-20_3300034022.depth -o ME2018-04-20_3300034022/bin -t 4
+module load metabat2; cd ME2018-04-25_3300042375; metabat2 -i ME2018-04-25_3300042375_assembled_contigs.fasta -a ME2018-04-25_3300042375.depth -o ME2018-04-25_3300042375/bin -t 4
+module load metabat2; cd ME2018-05-07_3300042481; metabat2 -i ME2018-05-07_3300042481_assembled_contigs.fasta -a ME2018-05-07_3300042481.depth -o ME2018-05-07_3300042481/bin -t 4
+```
+
+## step 6 delete files
+
+I already deleted the enormous sam files as part of the sorting step, but all these bam files are also pretty huge and can't be kept. So this deletes them, it's super quick and can just be sourced from the login node. It also deletes the other files we didn't need to save (like the copied-over start files and the bbmap references).
+
+example snippet:  
+```{bash, eval = F}
+#!/usr/bin/bash
+cd ME2018-01-19_3300042384
+rm ME2018-01-19_3300042384_assembled_contigs.fasta
+rm -Rf ref
+rm ME2018-01-19_3300042384.bam
+rm ME2018-04-11_3300037516.bam
+rm ME2018-04-20_3300034022.bam
+rm ME2018-04-25_3300042375.bam
+rm ME2018-05-07_3300042481.bam
+cd ../
+```
+
+## step 7 save files
+
+This copied all the bins into new folders in my corral folder, safe and sound. It took about 15 minutes for each assembly, but did in parallel so about 15 min total.
+
+example slurm:  
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J cleanup
+#SBATCH -p normal
+#SBATCH -N 2
+#SBATCH -n 52
+#SBATCH -t 4:20:00
+#SBATCH -o cleanup.o%j
+#SBATCH -e cleanup.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load biocontainers
+module load launcher
+export OMP_NUM_THREADS=4
+export LAUNCHER_JOB_FILE=step.7.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+example launcher:
+```{bash, eval = F}
+cd ME2018-01-19_3300042384 ; tar cvfz ME2018-01-19_3300042384.tar.gz ME2018-01-19_3300042384 ; cp ME2018-01-19_3300042384.tar.gz /corral/utexas/MCB22035/tymeflies/metabat2_bins ; mv ME2018-01-19_3300042384.tar.gz /scratch/08922/rrohwer/robinning/metabat2_bins ; rm -Rf ME2018-01-19_3300042384 ; cd ../ ; tar cvfz ME2018-01-19_3300042384.tar.gz ME2018-01-19_3300042384 ; cp ME2018-01-19_3300042384.tar.gz /corral/utexas/MCB22035/tymeflies/mapping_coverages ; mv ME2018-01-19_3300042384.tar.gz /scratch/08922/rrohwer/robinning/mapping_coverages ; rm -Rf ME2018-01-19_3300042384
+cd ME2018-04-11_3300037516 ; tar cvfz ME2018-04-11_3300037516.tar.gz ME2018-04-11_3300037516 ; cp ME2018-04-11_3300037516.tar.gz /corral/utexas/MCB22035/tymeflies/metabat2_bins ; mv ME2018-04-11_3300037516.tar.gz /scratch/08922/rrohwer/robinning/metabat2_bins ; rm -Rf ME2018-04-11_3300037516 ; cd ../ ; tar cvfz ME2018-04-11_3300037516.tar.gz ME2018-04-11_3300037516 ; cp ME2018-04-11_3300037516.tar.gz /corral/utexas/MCB22035/tymeflies/mapping_coverages ; mv ME2018-04-11_3300037516.tar.gz /scratch/08922/rrohwer/robinning/mapping_coverages ; rm -Rf ME2018-04-11_3300037516
+cd ME2018-04-20_3300034022 ; tar cvfz ME2018-04-20_3300034022.tar.gz ME2018-04-20_3300034022 ; cp ME2018-04-20_3300034022.tar.gz /corral/utexas/MCB22035/tymeflies/metabat2_bins ; mv ME2018-04-20_3300034022.tar.gz /scratch/08922/rrohwer/robinning/metabat2_bins ; rm -Rf ME2018-04-20_3300034022 ; cd ../ ; tar cvfz ME2018-04-20_3300034022.tar.gz ME2018-04-20_3300034022 ; cp ME2018-04-20_3300034022.tar.gz /corral/utexas/MCB22035/tymeflies/mapping_coverages ; mv ME2018-04-20_3300034022.tar.gz /scratch/08922/rrohwer/robinning/mapping_coverages ; rm -Rf ME2018-04-20_3300034022
+cd ME2018-04-25_3300042375 ; tar cvfz ME2018-04-25_3300042375.tar.gz ME2018-04-25_3300042375 ; cp ME2018-04-25_3300042375.tar.gz /corral/utexas/MCB22035/tymeflies/metabat2_bins ; mv ME2018-04-25_3300042375.tar.gz /scratch/08922/rrohwer/robinning/metabat2_bins ; rm -Rf ME2018-04-25_3300042375 ; cd ../ ; tar cvfz ME2018-04-25_3300042375.tar.gz ME2018-04-25_3300042375 ; cp ME2018-04-25_3300042375.tar.gz /corral/utexas/MCB22035/tymeflies/mapping_coverages ; mv ME2018-04-25_3300042375.tar.gz /scratch/08922/rrohwer/robinning/mapping_coverages ; rm -Rf ME2018-04-25_3300042375
+cd ME2018-05-07_3300042481 ; tar cvfz ME2018-05-07_3300042481.tar.gz ME2018-05-07_3300042481 ; cp ME2018-05-07_3300042481.tar.gz /corral/utexas/MCB22035/tymeflies/metabat2_bins ; mv ME2018-05-07_3300042481.tar.gz /scratch/08922/rrohwer/robinning/metabat2_bins ; rm -Rf ME2018-05-07_3300042481 ; cd ../ ; tar cvfz ME2018-05-07_3300042481.tar.gz ME2018-05-07_3300042481 ; cp ME2018-05-07_3300042481.tar.gz /corral/utexas/MCB22035/tymeflies/mapping_coverages ; mv ME2018-05-07_3300042481.tar.gz /scratch/08922/rrohwer/robinning/mapping_coverages ; rm -Rf ME2018-05-07_3300042481
+
+```

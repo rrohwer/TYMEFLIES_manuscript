@@ -1,0 +1,4 @@
+SPID FILENAME
+1282429 /global/dna/dm_archive/rqc/analyses/AUTO-318869/52460.2.340955.GCGTTCTA-GCGTTCTA.filter-METAGENOME.fastq.gz
+1263762 /global/dna/dm_archive/rqc/analyses/AUTO-309805/52438.4.334100.TCGAGTGA-TCACTCGA.filter-METAGENOME.fastq.gz
+1263741 /global/dna/dm_archive/rqc/analyses/AUTO-304552/52434.1.332899.GGTACTAC-GTAGTACC.filter-METAGENOME.fastq.gz

@@ -1,0 +1,219 @@
+---
+title: "Robinning"
+subtitle: "6- annotate genomes"
+author: "Robin Rohwer"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{css, echo=FALSE}
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: scroll !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+```
+
+## get JGI scaffold key
+
+Since JGI already annotated the whole assemblies, at first I thought I would use those files, and just merge the contigs with the genome files. However, JGI uses a mix of annotation software, and I had already run prodigal to feed into inStrain. Therefore, in order for my gene annotations to match inStrain's gene information, I ran prodigal to call genes.  
+
+First though, in case the JGI files are useful later here is how I added meaningful contig names. These scripts are in the `2023-04-12_get_contig_name_key` folder.  
+
+The files Matthew sent me from JGI jamo are saved here: `/home/yggshare/current_projects/TYMEFLIES/tymeflies/gene_annotations_IMG`. There is one file per assembly, saved by the Gold Analysis Project ID (even though they were looked up with the ITS AP IDs in the scripts folder. The scaffolds also get renamed during annotation, so they don't match the assembly names. JGI ID's are a shit show...)
+
+Using the script `3-get_scaffold_names_from_all_bins.R` I generated a jobfile to run on Brett's server. I simply gets a file of all the scaffold names. This is the code typed into the terminal to run the jobfile using parallel. This runs all 471 lines, 60 threads at a time. It's a convenient way to use parallel because the jobfiles you make are the same format as the launcher files for TACC:
+
+```{bash, eval = F}
+cat 3-get_bin_scaffold_names.jobfile | parallel -j 60
+```
+
+Example lines from jobfile:
+
+```{bash, eval = F}
+cat /home/yggshare/current_projects/TYMEFLIES/tymeflies/metabat2_bins_renamed/ME2013-02-02s1D0_3300042325/* | grep ">" > ME2013-02-02s1D0_3300042325_scaffolds.txt
+cat /home/yggshare/current_projects/TYMEFLIES/tymeflies/metabat2_bins_renamed/ME2015-04-11_3300034167/* | grep ">" > ME2015-04-11_3300034167_scaffolds.txt
+cat /home/yggshare/current_projects/TYMEFLIES/tymeflies/metabat2_bins_renamed/ME2001-03-13pf_3300033984/* | grep ">" > ME2001-03-13pf_3300033984_scaffolds.txt
+cat /home/yggshare/current_projects/TYMEFLIES/tymeflies/metabat2_bins_renamed/ME2001-04-10pf_3300042886/* | grep ">" > ME2001-04-10pf_3300042886_scaffolds.txt
+cat /home/yggshare/current_projects/TYMEFLIES/tymeflies/metabat2_bins_renamed/ME2002-02-28pf_3300044568/* | grep ">" > ME2002-02-28pf_3300044568_scaffolds.txt
+```
+
+Next I used this to create a scaffold key with the script `4-create_scaffold_key.R`, which runs with Rscript on the server. It makes a key between all these different IDs to the scaffold names that are in my renamed bins. The final key is saved in `make_scaffold_key` folder. It was run like this:
+
+```{bash, eval = F}
+Rscript 4-create_scaffold_key.R 2022-06-27_bigtyme.rds 2022-06-27_bigtyme.rds all_bin_scaffolds.txt.gz all_IMG_scaffolds.txt.gz bin_scaffold_key.csv.gz
+```
+
+and the key looks like this:
+```
+Assembly.Scaffold.Name,IMG.Scaffold.Name,Robin.Scaffold.Name
+scaffold_100000_c1,Ga0335011_0099382,ME2014-08-29_3300036719_group5_bin114.fna_scaffold_100000_c1
+scaffold_100000_c1,Ga0453080_0097652,ME2013-08-30_3300042905_group4_bin131.fna_scaffold_100000_c1
+scaffold_100000_c1,Ga0453090_0097608,ME2014-07-24_3300043772_group5_bin227.fna_scaffold_100000_c1
+scaffold_100000_c1,Ga0453175_0099436,ME2001-08-13pf_3300042453_group1_bin248.fna_scaffold_100000_c1
+```
+
+So anyway, even though I didn't use that the key might be helpful at some point.
+
+## call genes with prodigal
+
+I didn't save the by-genome prodigal output (inStrain took a combined file), but fortunately (!!) prodigal gives you the same output each time you run it, and it doesn't take long to re-run. I did this on TACC on a develoment node. I re-ran the old submit scripts made by `2023-03-12_run_prodigal_on_drep96_winners/make_prodigal_submit_script.R`
+
+Slurm file:
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J prodigal
+#SBATCH -p development
+#SBATCH -N 1
+#SBATCH -n 128
+#SBATCH -t 00:15:00
+#SBATCH -o prodigal.o%j
+#SBATCH -e prodigal.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load launcher
+export LAUNCHER_JOB_FILE=run_prodigal.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+
+Example launcher file:
+```{bash, eval = F}
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; prodigal -i ../metabat2_bins_renamed/ME2013-02-02s1D0_3300042325/ME2013-02-02s1D0_3300042325_group4_bin39.fna -o ME2013-02-02s1D0_3300042325_group4_bin39.genes -a ME2013-02-02s1D0_3300042325_group4_bin39.genes.faa -d ME2013-02-02s1D0_3300042325_group4_bin39.genes.fna -m -p single
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; prodigal -i ../metabat2_bins_renamed/ME2015-04-11_3300034167/ME2015-04-11_3300034167_group6_bin53.fna -o ME2015-04-11_3300034167_group6_bin53.genes -a ME2015-04-11_3300034167_group6_bin53.genes.faa -d ME2015-04-11_3300034167_group6_bin53.genes.fna -m -p single
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; prodigal -i ../metabat2_bins_renamed/ME2014-09-07_3300035187/ME2014-09-07_3300035187_group5_bin119.fna -o ME2014-09-07_3300035187_group5_bin119.genes -a ME2014-09-07_3300035187_group5_bin119.genes.faa -d ME2014-09-07_3300035187_group5_bin119.genes.fna -m -p single
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; prodigal -i ../metabat2_bins_renamed/ME2004-08-06_3300043437/ME2004-08-06_3300043437_group2_bin122.fna -o ME2004-08-06_3300043437_group2_bin122.genes -a ME2004-08-06_3300043437_group2_bin122.genes.faa -d ME2004-08-06_3300043437_group2_bin122.genes.fna -m -p single
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate instrain_py310 ; prodigal -i ../metabat2_bins_renamed/ME2017-07-24_3300042509/ME2017-07-24_3300042509_group7_bin86.fna -o ME2017-07-24_3300042509_group7_bin86.genes -a ME2017-07-24_3300042509_group7_bin86.genes.faa -d ME2017-07-24_3300042509_group7_bin86.genes.fna -m -p single
+```
+
+## get interproscan annotations
+
+Interproscan runs like a dozen different annotation softwares. At first I tried it on Brett's server, but it takes an hour or two per genome so... you can do the math. Then I switched to TACC. This was all a giant rabbit hole though, because interproscan gives such detailed annotations and there's no easy way to group them into coarser categories that I could relate to _environmental functions_. Anyway, I got it running on TACC. The script generation is in folder `server-scripts/written/2023-04-19_run_interproscan_on_drep96_winners`.
+
+First step is to remove the asterisks from the prodigal output. These are stop codons, and usually they are not included in the gene sequence. Notes are in script `remove_asterisks_from_prodigal_output.R` although I figured out that there are no asterisks in any sequence name so I simply removed them this way:
+```{bash eval = F}
+find *\.faa -exec sed -i 's/\*//g' {} \;
+```
+
+Next I made the submit scripts using `make_interproscan_submit_scripts.R`. Since this is time consuming, there are multiple submit scripts. There's also an excel file in the generated folder to track their submission: `track_interpro_runs.xlsx`.  To run on TACC, copy over the whole zipped folder structure and run from that.
+
+The slurm files look like:
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J interpro
+#SBATCH -p normal
+#SBATCH -N 20
+#SBATCH -n 60
+#SBATCH -t 27:0:00
+#SBATCH -o interproscan.o%j
+#SBATCH -e interproscan.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load launcher
+export LAUNCHER_JOB_FILE=runinterproscan.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+
+And the launcher files look like:
+```{bash, eval = F}
+export PATH="/work/08922/rrohwer/ls6/jdk-17.0.6+10/bin:$PATH" ; export PATH="/work/08922/rrohwer/ls6/interproscan-5.63-95.0:$PATH" ; interproscan.sh -i /scratch/08922/rrohwer/runprodigal96_take2/ME2013-02-02s1D0_3300042325_group4_bin39.genes.faa -f tsv gff3 -cpu 128 -b ME2013-02-02s1D0_3300042325_group4_bin39 -dp -iprlookup -goterms -pa
+export PATH="/work/08922/rrohwer/ls6/jdk-17.0.6+10/bin:$PATH" ; export PATH="/work/08922/rrohwer/ls6/interproscan-5.63-95.0:$PATH" ; interproscan.sh -i /scratch/08922/rrohwer/runprodigal96_take2/ME2015-04-11_3300034167_group6_bin53.genes.faa -f tsv gff3 -cpu 128 -b ME2015-04-11_3300034167_group6_bin53 -dp -iprlookup -goterms -pa
+export PATH="/work/08922/rrohwer/ls6/jdk-17.0.6+10/bin:$PATH" ; export PATH="/work/08922/rrohwer/ls6/interproscan-5.63-95.0:$PATH" ; interproscan.sh -i /scratch/08922/rrohwer/runprodigal96_take2/ME2014-09-07_3300035187_group5_bin119.genes.faa -f tsv gff3 -cpu 128 -b ME2014-09-07_3300035187_group5_bin119 -dp -iprlookup -goterms -pa
+export PATH="/work/08922/rrohwer/ls6/jdk-17.0.6+10/bin:$PATH" ; export PATH="/work/08922/rrohwer/ls6/interproscan-5.63-95.0:$PATH" ; interproscan.sh -i /scratch/08922/rrohwer/runprodigal96_take2/ME2004-08-06_3300043437_group2_bin122.genes.faa -f tsv gff3 -cpu 128 -b ME2004-08-06_3300043437_group2_bin122 -dp -iprlookup -goterms -pa
+export PATH="/work/08922/rrohwer/ls6/jdk-17.0.6+10/bin:$PATH" ; export PATH="/work/08922/rrohwer/ls6/interproscan-5.63-95.0:$PATH" ; interproscan.sh -i /scratch/08922/rrohwer/runprodigal96_take2/ME2017-07-24_3300042509_group7_bin86.genes.faa -f tsv gff3 -cpu 128 -b ME2017-07-24_3300042509_group7_bin86 -dp -iprlookup -goterms -pa
+```
+
+Interproscan gives you multiple annotations per gene (one for each software). But that's not even the hard part, the issue is knowing what the super specific annotations mean functionally. There are IPR numbers, but even the higher level of them was really specific. I saved the hierarchy files so that I have them for this version of interproscan if I want later: `data/2023-09-09_interpro_IPR_hierarchy_files`.  
+
+Interproscan also gives you GO terms. I went down a rabbit hole trying to use those, because there's tons of software, like the R package GOSemSim, that try to summarize the GO terms either using the network structure/annotation depths or semantic similarities between the annotations themselved. There's whole review articles about how to do this. My paper notes are saved here: `2023-09-07 ppr notes- GO terms.docx`. But basically I couldn't find anything using them for metagenomics, so I think they are super Euk focused. That GOSemSim package, for example, wanted an organism name when I tried to start using it.  
+
+So I abandoned the interproscan results for now, even though they took so long to get.  
+
+## get COG annotations
+
+COGs are super general, so I ran eggnog mapper to get the COG categories for each gene. The eggnog instructions were pretty difficult, but the actual install was smooth, and it ran really fast. These scripts were generated by `server-scripts/written/2023-04-30_run_eggnog_on_drep96_winners/make_full_run.R`. I ran them on TACC and it took 20 hrs.  
+
+Slurm:  
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH -J eggnog
+#SBATCH -p normal
+#SBATCH -N 20
+#SBATCH -n 40
+#SBATCH -t 23:50:00
+#SBATCH -o eggnog.o%j
+#SBATCH -e eggnog.e%j
+#SBATCH --mail-type=all
+#SBATCH --mail-user=rohwer@utexas.edu
+module load launcher
+export LAUNCHER_JOB_FILE=run_eggnog.launcher
+export LAUNCHER_SCHED=interleaved
+${LAUNCHER_DIR}/paramrun
+```
+
+Launcher example:
+```{bash, eval = F}
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate eggnog ; emapper.py -i ../runprodigal96_take2/ME2013-02-02s1D0_3300042325_group4_bin39.genes.faa -o ME2013-02-02s1D0_3300042325_group4_bin39 --cpu 63 --data_dir ../eggnog_databases --dbmem
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate eggnog ; emapper.py -i ../runprodigal96_take2/ME2015-04-11_3300034167_group6_bin53.genes.faa -o ME2015-04-11_3300034167_group6_bin53 --cpu 63 --data_dir ../eggnog_databases --dbmem
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate eggnog ; emapper.py -i ../runprodigal96_take2/ME2014-09-07_3300035187_group5_bin119.genes.faa -o ME2014-09-07_3300035187_group5_bin119 --cpu 63 --data_dir ../eggnog_databases --dbmem
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate eggnog ; emapper.py -i ../runprodigal96_take2/ME2004-08-06_3300043437_group2_bin122.genes.faa -o ME2004-08-06_3300043437_group2_bin122 --cpu 63 --data_dir ../eggnog_databases --dbmem
+source /work/08922/rrohwer/ls6/miniforge3/etc/profile.d/conda.sh ; conda activate eggnog ; emapper.py -i ../runprodigal96_take2/ME2017-07-24_3300042509_group7_bin86.genes.faa -o ME2017-07-24_3300042509_group7_bin86 --cpu 63 --data_dir ../eggnog_databases --dbmem
+```
+
+The files are saved here: `/home/yggshare/current_projects/TYMEFLIES/tymeflies//eggnog_annotations`
+
+This was easy to interpret the results, the the categories are super coarse. I wanted something a little more specific. So I abandoned these and next I ran KEGG annotations! 
+
+## Get KEGG annotations
+
+I used kofanscan to get KEGG annotations. It is apparently twice as fast as KAAS and much much faster than BlastKOALA one. It uses hmmer searches. I ran it on Brett's server and it took a little less than 24 hrs to finish. I generated the scripts using `2023-09-13_run_kofamscan/run_kofamscan_per_genome_fna.R`.
+
+I ran them using parallel:
+```{bash, eval = F}
+cat kofamscan_by_genome.jobfile | parallel -j 115
+```
+
+And the jobfile looks like:
+```{bash, eval = F}
+exec_annotation ../../yggshare/current_projects/TYMEFLIES/tymeflies/runprodigal96_take2/ME2013-02-02s1D0_3300042325_group4_bin39.genes.faa -o ME2013-02-02s1D0_3300042325_group4_bin39.kofamscan.tsv -p ../kofam_databases/profiles -k ../kofam_databases/ko_list --cpu 1 --format detail-tsv --tmp-dir=temp/temp_ME2013-02-02s1D0_3300042325_group4_bin39
+exec_annotation ../../yggshare/current_projects/TYMEFLIES/tymeflies/runprodigal96_take2/ME2015-04-11_3300034167_group6_bin53.genes.faa -o ME2015-04-11_3300034167_group6_bin53.kofamscan.tsv -p ../kofam_databases/profiles -k ../kofam_databases/ko_list --cpu 1 --format detail-tsv --tmp-dir=temp/temp_ME2015-04-11_3300034167_group6_bin53
+exec_annotation ../../yggshare/current_projects/TYMEFLIES/tymeflies/runprodigal96_take2/ME2014-09-07_3300035187_group5_bin119.genes.faa -o ME2014-09-07_3300035187_group5_bin119.kofamscan.tsv -p ../kofam_databases/profiles -k ../kofam_databases/ko_list --cpu 1 --format detail-tsv --tmp-dir=temp/temp_ME2014-09-07_3300035187_group5_bin119
+exec_annotation ../../yggshare/current_projects/TYMEFLIES/tymeflies/runprodigal96_take2/ME2004-08-06_3300043437_group2_bin122.genes.faa -o ME2004-08-06_3300043437_group2_bin122.kofamscan.tsv -p ../kofam_databases/profiles -k ../kofam_databases/ko_list --cpu 1 --format detail-tsv --tmp-dir=temp/temp_ME2004-08-06_3300043437_group2_bin122
+exec_annotation ../../yggshare/current_projects/TYMEFLIES/tymeflies/runprodigal96_take2/ME2017-07-24_3300042509_group7_bin86.genes.faa -o ME2017-07-24_3300042509_group7_bin86.kofamscan.tsv -p ../kofam_databases/profiles -k ../kofam_databases/ko_list --cpu 1 --format detail-tsv --tmp-dir=temp/temp_ME2017-07-24_3300042509_group7_bin86
+```
+
+These annotations look the most promising. But it's still not straightforward to actually *use* them!
+
+## Match KOs to pathways
+
+Most people want to know what KEGG pathways are in their genome, and how complete they are. But I want to know, for a given _gene_, what pathway does it belong to. So the opposite direction!  
+
+There's lots of software that does the pathway presence direction, but most of them also have some custom curation of the pathways and then parsing backwards may or may not be possible. Since it's straightforward to go in this direction, I just coded a script to calculate pathway completeness myself. You can use the KEGG pathways that I found, or plug in curated ones from some other took, like keggdecoder (pathways are hard coded in the main python file), metabolic (not sure where), or dram (also not sure where). The idea is:
+
+1. Which pathways are in the genome
+2. Which pathway options exist for my genes of interest
+3. Narrow down pathway options to ones that actually exist in the genome
+
+
+
+
+
+
+
+
+
+
+
+
+

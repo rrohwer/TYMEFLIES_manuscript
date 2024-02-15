@@ -1,0 +1,7 @@
+SPID FILENAME
+1262995 /global/dna/dm_archive/rqc/analyses-36/AUTO-368172/assembly.contigs.fasta
+1282434 /global/dna/dm_archive/rqc/analyses/AUTO-361361/assembly.contigs.fasta
+1263006 /global/dna/dm_archive/rqc/analyses/AUTO-347674/assembly.contigs.fasta
+1282488 /global/dna/dm_archive/rqc/analyses/AUTO-347676/assembly.contigs.fasta
+1282436 /global/dna/dm_archive/rqc/analyses-36/AUTO-369027/assembly.contigs.fasta
+1282495 /global/dna/dm_archive/rqc/analyses/AUTO-347675/assembly.contigs.fasta

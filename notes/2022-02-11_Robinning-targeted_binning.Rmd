@@ -1,0 +1,316 @@
+---
+title: "Targeted Binning"
+author: "Robin Rohwer"
+date: "2/11/2022"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{css, echo = FALSE}
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: scroll !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+```
+
+# Choose sample groups
+
+### choose what otu to target
+
+Want to make these test groups:  
+
+Abund | Purity
+|:------|:-----|
+high  | high
+high  | low
+low   | high
+low   | low
+
+* acI-B1 (OTU 1) doesn't have any low abundance but higher purity  
+* acI-A6 (OTU 2) has no high purity at all  
+* LD12 (OTU3) could work, but no outlier high abundance
+* Aphanizominon (OTU4) looks like a perfect test case  
+    * plus it's the "climate winner" in early spring, so genome of interest!  
+  
+### choose which samples
+
+***
+
+##### High Abund, High purity:
+
+![](/Users/rohwer/Dropbox/Research/data-pointed-to-by-git-repos/TYMEFLIES-untracked/figures/2022-02-11_abundance-purity_plots/otu4-high_abund_high_purity.png)
+
+ sample.names | abund    | perc     | SPID    | taxonID
+|:------------|:---------|:---------|:--------|:-----------|
+10Jun2015     | 24.26273 | 93.36969 | 1263632 | 3300042356
+16Jun2017     | 26.68893 | 95.20243 | 1263612 | 3300042330
+07Jun2018     | 28.29178 | 95.70233 | 1229880 | 3300034013
+
+***
+
+##### High Abund, Low purity:
+
+![](/Users/rohwer/Dropbox/Research/data-pointed-to-by-git-repos/TYMEFLIES-untracked/figures/2022-02-11_abundance-purity_plots/otu4-high_abund_low_purity.png)
+
+sample.names   | abund     | perc      | SPID    | taxonID
+|:-------------|:----------|:----------|:--------|:--------|
+02Jul2001.D8pf | 9.552024  | 58.85539  | 1263657 | 3300042397
+28Jun2011      |  9.179070 | 86.52981  | 1263638 | 3300042360
+27Jun2015      | 11.751508 | 87.45914  | 1263376 | 3300042558
+
+***
+
+##### Low Abund, High purity:
+
+![](/Users/rohwer/Dropbox/Research/data-pointed-to-by-git-repos/TYMEFLIES-untracked/figures/2022-02-11_abundance-purity_plots/otu4-low_abund_high_purity.png)
+
+sample.names   | abund     | perc      | SPID    | taxonID
+|:-------------|:----------|:----------|:--------|:--------|
+15Sep2008.D10  | 0.5212179 | 99.56617  | 1262973 | 3300042539
+21May2013      | 0.4166909 | 100.00000 | 1263325 | 3300042460
+23Aug2013      | 0.5234137 | 100.00000 | 1229925 | 3300034106
+
+***
+
+##### Low Abund, Low purity:
+
+![](/Users/rohwer/Dropbox/Research/data-pointed-to-by-git-repos/TYMEFLIES-untracked/figures/2022-02-11_abundance-purity_plots/otu4-low_abund_low_purity.png)
+
+sample.names   | abund     | perc      | SPID    | taxonID
+|:-------------|:----------|:----------|:--------|:--------|
+06Jun2000.pf   | 0.5344428 | 53.28433  | 1263737 | 3300042549
+20Jun2000.pf   | 0.5984952 | 66.18440  | 1263048 | 3300042868
+25May2017      | 1.0981579 | 72.90007  | 1263014 | 3300042863
+
+
+# Gather Data
+
+The metagenome reads I already copied and renamed and dealt with the duplicate SPIDs. I don't right now know how to deal with the duplicate SPIDs for the assemblies, but I will just grab assemblies for the samples I'm using only right now.  
+
+There is an assembly.scaffolds.fna and an assembly.contigs.fna. I want to use the "contigs" file. This is created with one assembly, instead of merging assemblies created using different kmer sizes. The scaffolds can be longer, but are also more prone to having chimeras. Therefore, I'll use the contigs file.  
+
+##### Get all the assembly files  
+
+```{bash, eval=F}
+
+module load jamo
+pwd
+# /global/cscratch1/sd/rohwer/robinning/target_OTU4/assemblies
+
+# ---- targeted ----
+
+jamo info all spid 1263632 | grep assembly.contigs.fasta
+# [1263632] /global/dna/dm_archive/rqc/analyses/AUTO-306308/assembly.contigs.fasta PURGED 5fc5663e68e57977fd24e652
+jamo fetch all id 5fc5663e68e57977fd24e652
+cp /global/dna/dm_archive/rqc/analyses/AUTO-306308/assembly.contigs.fasta ME2015-06-10_3300042356_assembled_contigs.fasta
+
+jamo info all spid 1263612 | grep assembly.contigs.fasta
+# [1263612] /global/dna/dm_archive/rqc/analyses/AUTO-306319/assembly.contigs.fasta PURGED 5fc566e068e57977fd24e6d7
+jamo fetch all id 5fc566e068e57977fd24e6d7
+cp /global/dna/dm_archive/rqc/analyses/AUTO-306319/assembly.contigs.fasta ME2017-06-16_3300042330_assembled_contigs.fasta
+
+jamo info all spid 1229880 | grep assembly.contigs.fasta
+# [1229880] /global/dna/dm_archive/rqc/analyses/AUTO-229105/assembly.contigs.fasta RESTORED 5c93e0e646d1e61fc468db19
+# no need to fetch, already restored
+cp /global/dna/dm_archive/rqc/analyses/AUTO-229105/assembly.contigs.fasta ME2018-06-07_3300034013_assembled_congigs.fasta
+```
+
+```{bash, eval=F}
+# ---- abund ----
+
+jamo info all spid 1263657 | grep assembly.contigs.fasta
+# [1263657] /global/dna/dm_archive/rqc/analyses/AUTO-306269/assembly.contigs.fasta PURGED 5fc5648068e57977fd24e46f
+jamo fetch all id 5fc5648068e57977fd24e46f
+cp /global/dna/dm_archive/rqc/analyses/AUTO-306269/assembly.contigs.fasta ME2001-07-02D8pf_3300042397_assembled_contigs.fasta
+
+jamo info all spid 1263638 | grep assembly.contigs.fasta
+# [1263638] /global/dna/dm_archive/rqc/analyses/AUTO-306305/assembly.contigs.fasta PURGED 5fc5660e68e57977fd24e62f
+jamo fetch all id 5fc5660e68e57977fd24e62f
+cp /global/dna/dm_archive/rqc/analyses/AUTO-306305/assembly.contigs.fasta ME2011-06-28_3300042360_assembled_contigs.fasta
+
+jamo info all spid 1263376 | grep assembly.contigs.fasta
+# [1263376] /global/dna/dm_archive/rqc/analyses/AUTO-307039/assembly.contigs.fasta PURGED 5fce97f268e57977fd25bbdf
+jamo fetch all id 5fce97f268e57977fd25bbdf
+cp /global/dna/dm_archive/rqc/analyses/AUTO-307039/assembly.contigs.fasta ME2015-06-27_3300042558_assembled_contigs.fasta
+```
+```{bash, eval=F}
+# ---- purity ----
+
+jamo info all spid 1262973 | grep assembly.contigs.fasta
+# [1262973] /global/dna/dm_archive/rqc/analyses/AUTO-307244/assembly.contigs.fasta RESTORED 5fceb2aa68e57977fd25e925
+# already restored
+cp /global/dna/dm_archive/rqc/analyses/AUTO-307244/assembly.contigs.fasta ME2008-09-15D10_3300042539_assembled_contigs.fasta
+
+jamo info all spid 1263325 | grep assembly.contigs.fasta
+# [1263325] /global/dna/dm_archive/rqc/analyses/AUTO-306685/assembly.contigs.fasta RESTORED 5fc67c7768e57977fd24f9f0
+# already restored
+cp /global/dna/dm_archive/rqc/analyses/AUTO-306685/assembly.contigs.fasta ME2013-05-21_3300042460_assembled_contigs.fasta
+
+jamo info all spid 1229925 | grep assembly.contigs.fasta
+# [1229925] /global/dna/dm_archive/rqc/analyses/AUTO-229164/assembly.contigs.fasta RESTORED 5c950ac246d1e619fc0eb117
+# already restored
+cp /global/dna/dm_archive/rqc/analyses/AUTO-229164/assembly.contigs.fasta ME2013-08-23_3300034106_assembled_contigs.fasta
+```
+```{bash, eval=F}
+# ---- untargeted ----
+
+jamo info all spid 1263737 | grep assembly.contigs.fasta
+# [1263737] /global/dna/dm_archive/rqc/analyses/AUTO-307347/assembly.contigs.fasta PURGED 5fcfe7a468e57977fd25f7b4
+jamo fetch all id 5fcfe7a468e57977fd25f7b4
+cp /global/dna/dm_archive/rqc/analyses/AUTO-307347/assembly.contigs.fasta ME2000-06-06pf_3300042549_assembled_contigs.fasta
+
+jamo info all spid 1263048 | grep assembly.contigs.fasta
+# [1263048] /global/dna/dm_archive/rqc/analyses/AUTO-310048/assembly.contigs.fasta RESTORED 5ff3896f536e7b328300786c
+# already restored
+cp /global/dna/dm_archive/rqc/analyses/AUTO-310048/assembly.contigs.fasta ME2000-06-20pf_3300042868_assembled_contigs.fasta
+
+jamo info all spid 1263014 | grep assembly.contigs.fasta
+# [1263014] /global/dna/dm_archive/rqc/analyses/AUTO-310023/assembly.contigs.fasta RESTORED 5ff387d7536e7b3283007748
+# already restored 
+cp /global/dna/dm_archive/rqc/analyses/AUTO-310023/assembly.contigs.fasta ME2017-05-25_3300042863_assembled_contigs.fasta
+```
+
+##### Get all the read files  
+```{bash, eval=F}
+pwd
+# /global/cscratch1/sd/rohwer/robinning/target_OTU4/reads
+
+# targeted
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2015-06-10_3300042356_filtered-reads.fastq.gz ./
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2017-06-16_3300042330_filtered-reads.fastq.gz ./
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2018-06-07_3300034013_filtered-reads.fastq.gz ./
+
+# abund
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2001-07-02D8pf_3300042397_filtered-reads.fastq.gz ./
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2011-06-28_3300042360_filtered-reads.fastq.gz ./
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2015-06-27_3300042558_filtered-reads.fastq.gz ./
+
+# purity
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2008-09-15D10_3300042539_filtered-reads.fastq.gz ./
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2013-05-21_3300042460_filtered-reads.fastq.gz ./
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2013-08-23_3300034106_filtered-reads.fastq.gz ./
+
+# untargeted
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2000-06-06pf_3300042549_filtered-reads.fastq.gz ./
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2000-06-20pf_3300042868_filtered-reads.fastq.gz ./
+cp /global/cfs/cdirs/pkmeco/tymeflies/filtered_reads/ME2017-05-25_3300042863_filtered-reads.fastq.gz ./
+
+```
+
+# Gather Environment
+
+Game plan:    
+
+* bbmap: assemby.fasta.gz + reads.fastq.gz --> mapped.sam + mapping.cov  
+* samtools: mapped.sam --> sorted.bam  
+* metabat2: sorted.bam --> mapping.depth  
+* metabat2: assembly.fasta.gz + mapped.depth --> bins.fasta.gz
+* gtdb-tk: bins.fasta.gz --> bins.taxonomy  
+* bbmap: bin.fasta + reads.fastq.gz --> bin.sam + bin.cov  
+* bin.cov + bin.cov + bin.cov --> bin.abund  
+
+#### Set up conda environment:  
+```{bash, eval = F}
+module load python
+conda activate robinning
+conda install -c bioconda bbmap
+conda install -c bioconda samtools
+conda install -c bioconda metabat2
+conda install -c conda-forge -c bioconda gtdbtk 
+
+# conda troubleshooting:
+# there was a bug running metabat, couldn't find file libdeflate.so.0
+# tried:
+conda update metabat2
+conda install -c conda-forge -c bioconda libdeflate=1.0
+conda update libdeflate
+# none of that worked, so I copied the file to create the name it was looking for:
+cd /global/homes/r/rohwer/.conda/envs/robinning/lib
+cp libdeflate.so libdeflate.so.0
+# and that worked
+```
+
+# Test-Run  
+
+#### First sample test run:
+```{bash, eval = F}
+# make bbmap index (Total time: 93.299 seconds.)
+bbmap.sh ref=../assemblies/ME2015-06-10_3300042356_assembled_contigs.fasta 
+
+# map reads to assembly (Total time: 1087.068 seconds.) (18 min)
+bbmap.sh in=../reads/ME2015-06-10_3300042356_filtered-reads.fastq.gz out=../sams/ME2015-06-10_3300042356.sam covstats=ME2015-06-10_3300042356.cov
+
+# sort the sam file (took <10 min)
+samtools sort -o ../sams/ME2015-06-10_3300042356.bam -O bam -@ 32 ../sams/ME2015-06-10_3300042356.sam
+
+# get metabat depth file
+jgi_summarize_bam_contig_depths --outputDepth ME2015-06-10_3300042356.depth ../sams/ME2015-06-10_3300042356.bam
+# note error message:
+# WARNING: your aligner reports an incorrect NM field.  You should run samtools calmd! nm < ins + del: cmatch=0 nm=1 ( insert=0 + del=50 + mismatch=1 == 51) A00178:162:H7LGYDSXY:2:2660:24306:11334 1:N:0:ACGACTTG+CAAGTCGT
+# Warning: consider running calmd on your bamfile! nm (27) != insertions (14) + deletions (7) + mismatches (13) (== 34) for read A00178:162:H7LGYDSXY:2:1261:30680:16297 1:N:0:ACGACTTG+CAAGTCGT
+
+# get metabat bins (takes like 2 seconds)
+metabat2 -i ../assemblies/ME2015-06-10_3300042356_assembled_contigs.fasta -a ME2015-06-10_3300042356.depth -o ME2015-06-10_3300042356/bin
+
+# get bin qualities with checkm (15 min)
+checkm lineage_wf ME2015-06-10_3300042356 runcheckm -x fa -t 64
+
+# export stats file from checkm
+checkm qa lineage.ms ./ --file ME2015-06-10_3300042356_binstats.txt --tab_table --threads 64
+
+```
+
+<br>  
+
+#### Three-sample test run:  
+Do the other two "targeted" samples, and run binning with differential coverage information.  
+No need to repeat making the mapping index, that will just be the same one, right?
+
+```{bash, eval = F}
+module load python
+conda activate robinning
+salloc --nodes 1 --qos interactive --time 02:00:00 --constraint haswell
+
+bbmap.sh in=../reads/ME2017-06-16_3300042330_filtered-reads.fastq.gz out=../sams/ME2017-06-16_3300042330_to_ME2015-06-10_3300042356.sam covstats=ME2017-06-16_3300042330_to_ME2015-06-10_3300042356.cov
+samtools sort -o ../sams/ME2017-06-16_3300042330_to_ME2015-06-10_3300042356.bam -O bam -@ 64 ../sams/ME2017-06-16_3300042330_to_ME2015-06-10_3300042356.sam
+
+bbmap.sh in=../reads/ME2018-06-07_3300034013_filtered-reads.fastq.gz out=../sams/ME2018-06-07_3300034013_to_ME2015-06-10_3300042356.sam covstats=ME2018-06-07_3300034013_to_ME2015-06-10_3300042356.cov
+samtools sort -o ../sams/ME2018-06-07_3300034013_to_ME2015-06-10_3300042356.bam -O bam -@ 64 ../sams/ME2018-06-07_3300034013_to_ME2015-06-10_3300042356.sam
+
+# Combine all 3 samples' mapping for depth info!
+jgi_summarize_bam_contig_depths --outputDepth targeted_ME2015-06-10_3300042356.depth ../sams/ME2015-06-10_3300042356.bam ../sams/ME2018-06-07_3300034013_to_ME2015-06-10_3300042356.bam ../sams/ME2017-06-16_3300042330_to_ME2015-06-10_3300042356.bam
+metabat2 -i ../assemblies/ME2015-06-10_3300042356_assembled_contigs.fasta -a targeted_ME2015-06-10_3300042356.depth -o targeted/bin
+
+checkm lineage_wf ../runmetabat/targeted ./ -x fa -t 64
+checkm qa lineage.ms ./ --file targeted_binstats.txt --tab_table --threads 64
+```
+
+Note error messages with bbmap: 
+
+`PrgEnv-gnu/7.1(18):ERROR:150: Module 'PrgEnv-gnu/7.1' conflicts with the currently loaded module(s) 'PrgEnv-intel/6.0.5'`
+`ERROR: Couldn't determine a value for variant PrgEnv!`
+`ERROR: Can't load samtools/1.4`
+
+Note error messages with jgi_summarize_bam_contig_depths:  
+
+`WARNING: your aligner reports an incorrect NM field.  You should run samtools calmd! nm < ins + del: cmatch=0 nm=0 ( insert=0 + del=62 + mismatch=0 == 62) A00178:162:H7LGYDSXY:1:1278:6858:21919 1:N:0:AATACGCG+CGCGTATT`
+`Warning: consider running calmd on your bamfile! nm (27) != insertions (14) + deletions (7) + mismatches (13) (== 34) for read A00178:162:H7LGYDSXY:2:1261:30680:16297 1:N:0:ACGACTTG+CAAGTCGT`
+
+
+# Next Steps...
+
+ * Bin with time-series
+ * Bin with co-assembly
+ * Compare bin quality
+ * Overall quality
+ * Targeted-Aphanizominon quality
+ * Adjust metabat for TS-only
+ * Compare bin quality
